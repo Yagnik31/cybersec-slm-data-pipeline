@@ -16,9 +16,11 @@ import os
 
 from . import anomaly
 from . import sanitize
-from .common import (OUT_CLEANED, OUT_DROPPED, OUT_FLAGGED, OUT_STAGES,
+from .common import (LOGS, OUT_CLEANED, OUT_DROPPED, OUT_FLAGGED, OUT_STAGES,
                     PARSE_ERROR, RAW_DATA, REPORTS, JsonlWriter,
                     find_input_files, iter_jsonl, logger, text_of)
+
+DEDUP_CKPT = os.path.join(LOGS, "dedup_checkpoint.pkl")
 from .dedup import Deduper
 from .langfilter import LangFilter
 from .pii import Redactor
@@ -42,9 +44,16 @@ def _new_counts():
     return {k: 0 for k in REPORT_COLS[3:]}
 
 
-def run_all(input_dir: str = RAW_DATA, limit: int | None = None) -> list[dict]:
-    """Full pipeline. `limit` optionally caps records per file (for smoke runs)."""
+def run_all(input_dir: str = RAW_DATA, limit: int | None = None,
+            resume: bool = True) -> list[dict]:
+    """Full pipeline. `limit` optionally caps records per file (for smoke runs).
+
+    `resume=True` (default) reloads the dedup checkpoint if one exists, so an
+    interrupted run can continue without re-processing previously seen hashes.
+    """
     deduper = Deduper()
+    if resume:
+        deduper.load_state(DEDUP_CKPT)
     redactor = Redactor()
     langf = LangFilter()
     logger.info(f"cleaning input: {input_dir}")
@@ -121,6 +130,7 @@ def run_all(input_dir: str = RAW_DATA, limit: int | None = None) -> list[dict]:
                     f"flagged={c['behavioral_flagged']} "
                     f"dropped={c['struct_dropped']+c['exact_dups']+c['near_dups']+c['non_en_dropped']}")
         rows.append({"sub_domain": sub, "source": source, "file": rel, **c})
+        deduper.save_state(DEDUP_CKPT)
 
     _write_report(rows)
     return rows

@@ -15,7 +15,7 @@ import pymupdf
 
 from .common import (ONE_MB, RAW_DATA, IngestLog, category_of, http_get, logger,
                     sha256_file)
-from .manifest import FEEDS, PDFS
+from .manifest import FEEDS, PDFS, XML_FEEDS
 
 BASE = RAW_DATA
 
@@ -57,6 +57,69 @@ def scrape_pdf(domain, slug, title, lic, url, log):
                license=lic, status="ok")
 
 
+def _normalize_feed_record(slug: str, rec: dict, title: str, feed_url: str, lic: str) -> dict:
+    """Map a raw feed record to the standard {source, url, license, text} schema.
+
+    MITRE STIX objects use `name` + `description`; CISA KEV uses structured
+    vulnerability fields. Both need a proper `text` field so the cleaning
+    stage does not drop them as structurally empty.
+    """
+    if slug.startswith("mitre-attack"):
+        ext = rec.get("external_references", [])
+        ref = next((r for r in ext if r.get("source_name", "").startswith("mitre")), {})
+        name = rec.get("name", "")
+        desc = rec.get("description", "")
+        phases = [p.get("phase_name", "") for p in rec.get("kill_chain_phases", [])]
+        parts = []
+        if name:
+            parts.append(f"Technique: {name}")
+        if ref.get("external_id"):
+            parts.append(f"ID: {ref['external_id']}")
+        if phases:
+            parts.append(f"Tactics: {', '.join(phases)}")
+        if desc:
+            parts.append(desc)
+        return {
+            "source": title,
+            "url": ref.get("url", feed_url),
+            "license": lic,
+            "text": "\n\n".join(filter(None, parts)),
+            "technique_id": ref.get("external_id", ""),
+            "tactic": phases,
+        }
+    if slug == "cisa-kev":
+        cve = rec.get("cveID", "")
+        parts = []
+        if cve:
+            parts.append(f"CVE ID: {cve}")
+        if rec.get("vulnerabilityName"):
+            parts.append(f"Vulnerability: {rec['vulnerabilityName']}")
+        vendor = f"{rec.get('vendorProject', '')} {rec.get('product', '')}".strip()
+        if vendor:
+            parts.append(f"Affected: {vendor}")
+        if rec.get("shortDescription"):
+            parts.append(rec["shortDescription"])
+        if rec.get("requiredAction"):
+            parts.append(f"Required Action: {rec['requiredAction']}")
+        return {
+            "source": title,
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+            "license": lic,
+            "text": "\n".join(parts),
+            "cve_id": cve,
+            "date_added": rec.get("dateAdded", ""),
+        }
+    # Generic fallback: attach provenance; map first recognized field to text.
+    out = {"source": title, "url": feed_url, "license": lic}
+    out.update(rec)
+    if "text" not in out:
+        for candidate in ("description", "content", "body", "summary"):
+            if out.get(candidate):
+                out["text"] = out[candidate]
+                break
+    return out
+
+
 def scrape_feed(domain, slug, title, lic, url, json_key, log):
     folder = os.path.join(BASE, domain, slug); os.makedirs(folder, exist_ok=True)
     logger.info(f"=== FEED: {title} ===")
@@ -70,13 +133,67 @@ def scrape_feed(domain, slug, title, lic, url, json_key, log):
     out = os.path.join(folder, slug + ".jsonl")
     with open(out, "wb") as f:
         for rec in records:
-            f.write(orjson.dumps(rec) + b"\n")
+            normalized = _normalize_feed_record(slug, rec, title, url, lic)
+            f.write(orjson.dumps(normalized) + b"\n")
     size = os.path.getsize(out)
     logger.info(f"  {len(records):,} rows, {size/ONE_MB:.2f} MB")
     log.record(kind="feed", name=slug, category=category_of("feed"), domain=domain,
                description=title, source_url=url, origin_format="json",
                orig_mb=round(len(r.content) / ONE_MB, 1),
                jsonl_mb=round(size / ONE_MB, 1), rows=len(records),
+               sha256=sha256_file(out), license=lic, status="ok")
+
+
+def scrape_cwe(domain: str, slug: str, title: str, lic: str, url: str,
+               log: IngestLog) -> None:
+    """Download MITRE CWE XML ZIP and convert each weakness to a JSONL record."""
+    import io
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    folder = os.path.join(BASE, domain, slug)
+    os.makedirs(folder, exist_ok=True)
+    logger.info(f"=== CWE XML: {title} ===")
+
+    r = http_get(url, timeout=120)
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        xml_name = next(n for n in z.namelist() if n.endswith(".xml"))
+        xml_bytes = z.read(xml_name)
+
+    open(os.path.join(folder, slug + ".xml"), "wb").write(xml_bytes)
+    _source_file(folder, title, url, lic)
+
+    ns = {"cwe": "http://cwe.mitre.org/cwe-7"}
+    root = ET.fromstring(xml_bytes)
+    out = os.path.join(folder, slug + ".jsonl")
+    n = 0
+    with open(out, "w", encoding="utf-8") as f:
+        for weakness in root.iter("{http://cwe.mitre.org/cwe-7}Weakness"):
+            cwe_id = weakness.get("ID", "")
+            name = weakness.get("Name", "")
+            desc_el = weakness.find("{http://cwe.mitre.org/cwe-7}Description")
+            ext_el = weakness.find("{http://cwe.mitre.org/cwe-7}Extended_Description")
+            desc = (desc_el.text or "").strip() if desc_el is not None else ""
+            ext = (ext_el.text or "").strip() if ext_el is not None else ""
+            text = f"CWE-{cwe_id}: {name}\n\n{desc}"
+            if ext:
+                text += f"\n\n{ext}"
+            rec = {
+                "source": title,
+                "url": f"https://cwe.mitre.org/data/definitions/{cwe_id}.html",
+                "license": lic,
+                "text": text.strip(),
+                "cwe_id": f"CWE-{cwe_id}",
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            n += 1
+
+    size = os.path.getsize(out)
+    logger.info(f"  {n} weaknesses, {size / ONE_MB:.2f} MB")
+    log.record(kind="xml_feed", name=slug, category="Feed", domain=domain,
+               description=title, source_url=url, origin_format="xml",
+               orig_mb=round(len(r.content) / ONE_MB, 1),
+               jsonl_mb=round(size / ONE_MB, 1), rows=n,
                sha256=sha256_file(out), license=lic, status="ok")
 
 
@@ -92,6 +209,11 @@ def run(log=None):
             scrape_feed(*e, log)
         except Exception as ex:
             logger.error(f"  FAILED {e[2]}: {type(ex).__name__}: {ex}")
+    for e in XML_FEEDS:
+        try:
+            scrape_cwe(*e, log)
+        except Exception as ex:
+            logger.error(f"  FAILED {e[1]}: {type(ex).__name__}: {ex}")
 
 
 if __name__ == "__main__":

@@ -174,8 +174,49 @@ def write_jsonl(df: pd.DataFrame, path: str) -> int:
 # CSVs above this size stream row-by-row (constant RAM) instead of via pandas.
 BIG_CSV_BYTES = 200 * 1024 * 1024
 
+# Field names tried in order when a dataset record lacks a `text` column.
+_TEXT_CANDIDATES = (
+    "text", "content", "body", "description", "email_text", "source_text",
+    "message", "comment", "payload", "abstract",
+)
+# Q&A column pairs: combine question + answer into a single text field.
+_QA_PAIRS = (
+    ("question", "answer"),
+    ("prompt", "response"),
+    ("input", "output"),
+    ("instruction", "response"),
+)
 
-def _stream_csv_to_jsonl(original: str, jsonl: str, cap: int) -> int:
+
+def enrich_df(df: pd.DataFrame, source: str, url: str, lic: str) -> pd.DataFrame:
+    """Add provenance (source/url/license) and normalise the text column.
+
+    Called on every dataset DataFrame before writing to JSONL so that the
+    cleaning stage can find `source`, `url`, `license`, and `text` on every
+    record regardless of the original dataset schema.
+    """
+    df = df.copy()
+    if "source" not in df.columns:
+        df["source"] = source
+    if "url" not in df.columns:
+        df["url"] = url
+    if "license" not in df.columns:
+        df["license"] = lic
+    if "text" not in df.columns:
+        for col in _TEXT_CANDIDATES:
+            if col in df.columns:
+                df["text"] = df[col].astype(str)
+                break
+        else:
+            for q_col, a_col in _QA_PAIRS:
+                if q_col in df.columns and a_col in df.columns:
+                    df["text"] = df[q_col].astype(str) + "\n\n" + df[a_col].astype(str)
+                    break
+    return df
+
+
+def _stream_csv_to_jsonl(original: str, jsonl: str, cap: int,
+                          extra_fields: dict | None = None) -> int:
     """Row-by-row CSV -> JSONL with orjson; constant memory, aborts past cap."""
     import csv
 
@@ -187,6 +228,10 @@ def _stream_csv_to_jsonl(original: str, jsonl: str, cap: int) -> int:
         reader = csv.DictReader(f, restkey="_extra", restval="")
         for row in reader:
             row.pop(None, None)
+            if extra_fields:
+                for k, v in extra_fields.items():
+                    if k not in row:
+                        row[k] = v
             line = orjson.dumps(row) + b"\n"
             size += len(line)
             if size > cap:
@@ -196,12 +241,21 @@ def _stream_csv_to_jsonl(original: str, jsonl: str, cap: int) -> int:
     return size
 
 
-def to_jsonl(original: str, jsonl: str, cap: int = CAP_BYTES) -> int:
-    """Convert any supported file to JSONL. Big/wide CSVs stream (constant RAM)."""
+def to_jsonl(original: str, jsonl: str, cap: int = CAP_BYTES,
+             *, meta: dict | None = None) -> int:
+    """Convert any supported file to JSONL. Big/wide CSVs stream (constant RAM).
+
+    `meta` (source, url, license) is injected into every record so the cleaning
+    stage finds the required provenance fields regardless of original schema.
+    """
     if original.lower().endswith(".csv") and os.path.getsize(original) > BIG_CSV_BYTES:
         logger.debug(f"streaming big CSV {os.path.basename(original)}")
-        return _stream_csv_to_jsonl(original, jsonl, cap)
-    return write_jsonl(read_any(original), jsonl)
+        return _stream_csv_to_jsonl(original, jsonl, cap, extra_fields=meta)
+    df = read_any(original)
+    if meta:
+        df = enrich_df(df, source=meta.get("source", ""),
+                       url=meta.get("url", ""), lic=meta.get("license", ""))
+    return write_jsonl(df, jsonl)
 
 
 # ----------------------------------------------------- SQLite ingest log -----

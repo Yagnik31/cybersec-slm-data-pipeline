@@ -15,6 +15,11 @@ dist/
 
 # Pipeline data (generated, too large for git)
 raw_data/
+
+# Source tracking belongs in sources/, not raw_data/
+# Move Sources.xlsx -> sources/Sources.xlsx
+*.xlsx
+*.xls
 cleaned/
 flagged/
 dropped/

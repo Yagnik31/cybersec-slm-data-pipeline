@@ -38,8 +38,8 @@ def show_table() -> None:
     print(f"written: {out_path}")
 
 
-def run(cmd: str = "all") -> None:
-    """Run an extraction command: scrape | fetch | html | all | table."""
+def run(cmd: str = "all", nvd_key: str | None = None) -> None:
+    """Run an extraction command: scrape | fetch | html | nvd | all | table."""
     if cmd == "table":
         show_table()
         return
@@ -54,6 +54,9 @@ def run(cmd: str = "all") -> None:
     if cmd in ("html", "crawl", "all"):
         from . import scrape_html
         scrape_html.run(log)
+    if cmd in ("nvd", "all"):
+        from . import fetch_nvd
+        fetch_nvd.run(log, api_key=nvd_key or os.environ.get("NVD_API_KEY"))
     logger.info("=== EXTRACTION DONE ===")
     show_table()
 

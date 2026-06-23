@@ -16,6 +16,8 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+import os
+import pickle
 import re
 
 from .common import (MINHASH_PERM, NEAR_DUP_THRESHOLD, SHINGLE_SIZE, logger,
@@ -141,3 +143,23 @@ class Deduper:
             return True, "exact duplicate"
         self._seen_exact.add(h)
         return self._near.add(text)
+
+    def save_state(self, path: str) -> None:
+        """Persist exact-hash set to disk for crash-safe resume.
+
+        Only the SHA256 set is checkpointed (not the near-dup LSH index, which
+        is fast to rebuild). On a restart near-dup detection starts fresh, but
+        exact duplicates are still caught across runs.
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self._seen_exact, f)
+        logger.debug(f"dedup: saved {len(self._seen_exact):,} hashes -> {path}")
+
+    def load_state(self, path: str) -> None:
+        """Restore exact-hash set saved by save_state()."""
+        if not os.path.exists(path):
+            return
+        with open(path, "rb") as f:
+            self._seen_exact = pickle.load(f)
+        logger.info(f"dedup: loaded {len(self._seen_exact):,} hashes from {path}")

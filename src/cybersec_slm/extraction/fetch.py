@@ -38,7 +38,8 @@ def _convert_and_log(original, jsonl, log, *, kind, name, domain, desc, url, lic
         os.remove(original)
         log.record(**meta, orig_mb=round(orig_mb, 1), status="skipped (>5GB)")
         return
-    size = to_jsonl(original, jsonl)
+    record_meta = {"source": desc, "url": url, "license": lic}
+    size = to_jsonl(original, jsonl, meta=record_meta)
     if size > CAP_BYTES:
         logger.warning(f"SKIP >5GB jsonl: {os.path.basename(jsonl)}")
         if os.path.exists(jsonl):
@@ -80,6 +81,7 @@ def fetch_hf(ref, domain, desc, lic, folder, log):
         open(jsonl, "wb").close()
         total = rows = orig_total = 0
         skipped = False
+        shard_meta = {"source": desc, "url": url0, "license": lic}
         for i, rel in enumerate(sorted(members)):
             if sib.get(rel, 0) > CAP_BYTES:
                 skipped = True
@@ -90,7 +92,7 @@ def fetch_hf(ref, domain, desc, lic, folder, log):
             download(url, orig)
             orig_total += os.path.getsize(orig)
             tmp = jsonl + ".part"
-            to_jsonl(orig, tmp)
+            to_jsonl(orig, tmp, meta=shard_meta)
             with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
                 shutil.copyfileobj(src, dst)
             os.remove(tmp)
