@@ -11,15 +11,16 @@ from __future__ import annotations
 
 import os
 
-from ..core import (CLEANED, DROPPED, FLAGGED, LOGS, PARSE_ERROR,  # noqa: F401
-                    RAW_DATA, STAGES, JsonlWriter, iter_jsonl, logger,
-                    try_import)
+from ..core import (CLEAN_DATA, CLEANED, DROPPED, FLAGGED, LOGS,  # noqa: F401
+                    PARSE_ERROR, RAW_DATA, STAGES, JsonlWriter, iter_jsonl,
+                    logger, try_import)
 
 # directory of this package (used by langfilter to look for a fasttext model)
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # output aliases (read naturally in the stage modules)
 OUT_CLEANED = CLEANED
+OUT_CLEAN_DATA = CLEAN_DATA       # streaming per-source clean output
 OUT_FLAGGED = FLAGGED
 OUT_DROPPED = DROPPED
 OUT_STAGES = STAGES
@@ -62,5 +63,10 @@ def find_input_files(input_dir: str = RAW_DATA):
 
 def text_of(rec: dict) -> str:
     """Best-effort text extraction; '' if absent/None."""
-    t = rec.get("text")
-    return t if isinstance(t, str) else ("" if t is None else str(t))
+    for field in ("text", "content", "description", "body", "raw_log", "message", "additional_info"):
+        val = rec.get(field)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    # Fallback: join all non-empty string values
+    parts = [str(v) for v in rec.values() if v and isinstance(v, str)]
+    return " ".join(parts)

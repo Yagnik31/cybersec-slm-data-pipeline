@@ -38,6 +38,7 @@ def data_root() -> str:
 DATA_ROOT = data_root()
 RAW_DATA = os.path.join(DATA_ROOT, "raw_data")     # extraction output / cleaning input
 CLEANED = os.path.join(DATA_ROOT, "cleaned")        # cleaning output -> EDA handoff
+CLEAN_DATA = os.path.join(DATA_ROOT, "clean_data")  # streaming per-source clean output
 FLAGGED = os.path.join(DATA_ROOT, "flagged")        # -> Data Annotation Team
 DROPPED = os.path.join(DATA_ROOT, "dropped")        # -> audit
 STAGES = os.path.join(DATA_ROOT, "_stages")         # single-stage diagnostics

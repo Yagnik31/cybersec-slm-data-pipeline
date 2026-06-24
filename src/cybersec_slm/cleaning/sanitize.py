@@ -86,16 +86,17 @@ def sanitize_record(rec: dict) -> tuple[dict, bool]:
     out = dict(rec)
     changed = False
 
-    for field in REQUIRED_FIELDS:               # fill missing fields
-        if field not in out or out[field] is None:
+    for field in REQUIRED_FIELDS:               # normalize existing fields only
+        if field in out and out[field] is None:
             out[field] = ""
             changed = True
 
-    raw_text = out.get("text", "")
-    clean = sanitize_text(raw_text)
-    if clean != raw_text:
-        changed = True
-    out["text"] = clean
+    if "text" in out and isinstance(out.get("text"), str):
+        raw_text = out["text"]
+        clean = sanitize_text(raw_text)
+        if clean != raw_text:
+            changed = True
+        out["text"] = clean
 
     # also tidy short metadata strings
     for field in ("source", "license"):

@@ -120,6 +120,23 @@ def _normalize_feed_record(slug: str, rec: dict, title: str, feed_url: str, lic:
     return out
 
 
+def _records_from(data, json_key):
+    """Extract a record list from a JSON feed, robust to shape.
+
+    Prefers ``data[json_key]``; falls back to the data itself if it's already a
+    list, otherwise the largest list-valued field (covers feeds whose key we
+    couldn't guess, e.g. spreadsheet rows with no json_key column)."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if isinstance(data.get(json_key), list):
+            return data[json_key]
+        lists = [v for v in data.values() if isinstance(v, list)]
+        if lists:
+            return max(lists, key=len)
+    return []
+
+
 def scrape_feed(domain, slug, title, lic, url, json_key, log):
     folder = os.path.join(BASE, domain, slug); os.makedirs(folder, exist_ok=True)
     logger.info(f"=== FEED: {title} ===")
@@ -127,7 +144,7 @@ def scrape_feed(domain, slug, title, lic, url, json_key, log):
     data = orjson.loads(r.content)
     open(os.path.join(folder, slug + ".json"), "wb").write(r.content)
     _source_file(folder, title, url, lic)
-    records = data.get(json_key, [])
+    records = _records_from(data, json_key)
     if slug.startswith("mitre"):
         records = [o for o in records if o.get("type") == "attack-pattern"]
     out = os.path.join(folder, slug + ".jsonl")

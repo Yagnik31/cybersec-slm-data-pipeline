@@ -7,6 +7,7 @@ Full pipeline (end-to-end):
 Individual stages:
     cybersec-slm extract  [scrape|fetch|html|nvd|all|table] [--nvd-key KEY]
     cybersec-slm clean    [all|sanitize|dedup|pii|lang|report|balance] [--limit N] [--cap N]
+    cybersec-slm run      [--sources X.xlsx] [--workers N]   # parallel streaming fetch+clean
     cybersec-slm chunk    [--chunk-size N] [--overlap N]
     cybersec-slm split    [--ratio 0.8 0.1 0.1] [--seed 42]
     cybersec-slm validate
@@ -62,9 +63,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("validate",
                    help="validate cleaned/ records against Pydantic schema")
 
+    # ── run (parallel streaming) ──────────────────────────────────────────────
+    r = sub.add_parser("run",
+                       help="parallel per-source fetch+clean -> clean_data/")
+    r.add_argument("--sources", default=None,
+                   help="path or URL to a sources .xlsx (default: manifest.py)")
+    r.add_argument("--sheet", default=None, help="worksheet name/index")
+    r.add_argument("--workers", type=int, default=None,
+                   help="process pool size (default: min(cpu, 8))")
+    r.add_argument("--limit", type=int, default=None,
+                   help="cap records per file (smoke test)")
+    r.add_argument("--keep-raw", action="store_true",
+                   help="keep raw_data/ instead of deleting after clean")
+    r.add_argument("--no-final-dedup", action="store_true",
+                   help="skip the final cross-source dedup pass")
+
     # ── all ───────────────────────────────────────────────────────────────────
     sub.add_parser("all", help="extract -> clean -> chunk -> split (full pipeline)")
-
     return p
 
 
@@ -85,6 +100,13 @@ def main(argv: list[str] | None = None) -> None:
                 apply_cap(args.cap)
         else:
             cleaning.run(args.action, limit=args.limit)
+
+    elif args.stage == "run":
+        from .extraction import parallel
+        parallel.run_streaming(args.sources, sheet=args.sheet,
+                               workers=args.workers, limit=args.limit,
+                               keep_raw=args.keep_raw,
+                               final_dedup=not args.no_final_dedup)
 
     elif args.stage == "chunk":
         from .chunking.chunker import run_chunking

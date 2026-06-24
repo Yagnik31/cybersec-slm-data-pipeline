@@ -2,6 +2,8 @@
 .env
 .venv
 venv
+raw_data
+cleaned_data
 
 # Python
 __pycache__
@@ -14,6 +16,7 @@ build/
 dist/
 
 # Pipeline data (generated, too large for git)
+# (READMEs inside these are force-added so the folders survive a clone)
 raw_data/
 
 # Source tracking belongs in sources/, not raw_data/
@@ -21,6 +24,7 @@ raw_data/
 *.xlsx
 *.xls
 cleaned/
+clean_data/
 flagged/
 dropped/
 _stages/

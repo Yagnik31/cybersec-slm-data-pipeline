@@ -105,7 +105,7 @@ NSLKDD_COLS = [
     "dst_host_serror_rate", "dst_host_srv_serror_rate", "dst_host_rerror_rate",
     "dst_host_srv_rerror_rate", "class", "difficulty_level",
 ]
-EXT_PRIORITY = (".parquet", ".jsonl", ".csv", ".json", ".txt")
+EXT_PRIORITY = (".parquet", ".jsonl", ".csv", ".json", ".xlsx", ".txt")
 SKIP_SUBSTRINGS = ("embedding", "faiss", "statistics", "data_stats", "_stats")
 
 
@@ -145,6 +145,10 @@ def read_any(path: str) -> pd.DataFrame:
             return pd.read_json(path)
         except ValueError:
             return _read_json_repair(path)
+    if low.endswith(".xlsx"):
+        return pd.read_excel(path, engine="openpyxl")
+    if low.endswith(".xls"):
+        return pd.read_excel(path)
     if low.endswith(".txt"):
         df = pd.read_csv(path, header=None, low_memory=False)
         if df.shape[1] == len(NSLKDD_COLS):
@@ -287,3 +291,19 @@ class IngestLog:
 
     def table(self) -> pd.DataFrame:
         return pd.read_sql_query("SELECT * FROM ingest ORDER BY domain, name", self.con)
+
+
+class _Collector:
+    """Drop-in for ``IngestLog`` that buffers rows in memory instead of SQLite.
+
+    The fetch/scrape handlers only ever call ``log.record(**kw)``, so passing a
+    ``_Collector`` lets a worker process run them without touching the shared
+    SQLite file. The parent later replays ``rows`` into the real ``IngestLog``.
+    """
+
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    def record(self, **kw):
+        kw.setdefault("ts", time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.rows.append({c: kw.get(c) for c in IngestLog.COLS})

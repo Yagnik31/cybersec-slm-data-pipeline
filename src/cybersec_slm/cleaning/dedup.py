@@ -125,8 +125,13 @@ class _DatasketchLSH:
 class Deduper:
     """Exact + near-duplicate detector with auto backend selection."""
 
-    def __init__(self, use_datasketch="auto"):
+    def __init__(self, use_datasketch="auto", enabled: bool = True):
+        self.enabled = enabled
         self._seen_exact: set[str] = set()
+        if not enabled:
+            self._near = None
+            self.backend = "disabled"
+            return
         ds = try_import("datasketch") if use_datasketch in ("auto", True) else None
         if ds is not None and use_datasketch is not False:
             self._near = _DatasketchLSH(ds)
@@ -137,7 +142,9 @@ class Deduper:
         logger.debug(f"dedup: near-dup backend = {self.backend}")
 
     def add(self, text: str) -> tuple[bool, str]:
-        """Index `text`; return (is_duplicate, reason)."""
+        """Index `text`; return (is_duplicate, reason). No-op when disabled."""
+        if not self.enabled:
+            return False, ""
         h = _exact_hash(text)
         if h in self._seen_exact:
             return True, "exact duplicate"

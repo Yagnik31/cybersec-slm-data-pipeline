@@ -12,12 +12,40 @@ appear in the final table.
 import os
 import shutil
 import sys
+from urllib.parse import urlparse
 
 from .common import (CAP_BYTES, EXT_PRIORITY, ONE_MB, RAW_DATA, SKIP_SUBSTRINGS,
                     IngestLog, OversizeError, category_of, count_lines, download,
                     group_key, logger, remote_size, sha256_file, to_jsonl)
 
 BASE = RAW_DATA
+
+
+def _github_target(url: str) -> tuple[str, str] | None:
+    """Resolve a github.com URL to something downloadable + a filename.
+
+    Repo root / tree URLs point at a *page*, not a file, so rewrite them to the
+    branch archive zip (processed by the zip path below). ``/blob/`` URLs become
+    their raw-file equivalent. Direct ``raw.githubusercontent.com`` links and
+    file URLs return None (handled as-is). Returns ``(download_url, name)``.
+    """
+    p = urlparse(url)
+    if p.netloc not in ("github.com", "www.github.com"):
+        return None
+    parts = [x for x in p.path.split("/") if x]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1][:-4] if parts[1].endswith(".git") else parts[1]
+    if len(parts) == 2:                       # owner/repo  -> default branch zip
+        return f"https://github.com/{owner}/{repo}/archive/HEAD.zip", f"{repo}.zip"
+    if parts[2] == "tree" and len(parts) >= 4:   # .../tree/<branch>[/subdir]
+        return (f"https://github.com/{owner}/{repo}/archive/refs/heads/{parts[3]}.zip",
+                f"{repo}.zip")
+    if parts[2] == "blob" and len(parts) >= 5:   # .../blob/<branch>/<path> -> raw
+        branch, rest = parts[3], "/".join(parts[4:])
+        return (f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{rest}",
+                os.path.basename(rest))
+    return None
 
 
 def _folder(domain, owner, name, counts):
@@ -155,8 +183,12 @@ def fetch_kaggle(ref, domain, desc, lic, folder, log):
 
 
 def fetch_url(url, domain, desc, lic, folder, log, kind="url"):
+    gh = _github_target(url)
+    if gh:
+        url, name = gh           # repo page -> archive zip / raw file
+    else:
+        name = os.path.basename(url.split("?")[0])
     sz = remote_size(url)
-    name = os.path.basename(url.split("?")[0])
     stem, fext = os.path.splitext(name)
     if sz and sz > CAP_BYTES:
         logger.warning(f"SKIP >5GB (pre-check): {name}")
