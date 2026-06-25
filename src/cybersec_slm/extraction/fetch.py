@@ -81,6 +81,42 @@ def _convert_and_log(original, jsonl, log, *, kind, name, domain, desc, url, lic
                rows=rows, sha256=sha256_file(jsonl), status="ok")
 
 
+def _combine_to_jsonl(paths, jsonl, log, *, kind, name, domain, desc, url, lic, origin_fmt):
+    """Convert and append every file in ``paths`` into a single ``jsonl``.
+
+    Used for archive/repo sources (github + zip) so a repo that stores its data
+    as many small files (e.g. iann0036/iam-dataset) collapses into one output
+    instead of one-jsonl-per-file. The 5 GB cap is enforced cumulatively and the
+    source is recorded once.
+    """
+    record_meta = {"source": desc, "url": url, "license": lic}
+    meta = dict(kind=kind, name=name, category=category_of(kind), domain=domain,
+                description=desc, source_url=url, origin_format=origin_fmt, license=lic)
+    open(jsonl, "wb").close()
+    orig_total = 0
+    for path in paths:
+        if os.path.getsize(path) > CAP_BYTES or os.path.getsize(jsonl) > CAP_BYTES:
+            logger.warning(f"SKIP >5GB (cumulative): {name}")
+            if os.path.exists(jsonl):
+                os.remove(jsonl)
+            log.record(**meta, orig_mb=round(orig_total / ONE_MB, 1) or None,
+                       status="skipped (>5GB)")
+            return
+        orig_total += os.path.getsize(path)
+        tmp = jsonl + ".part"
+        to_jsonl(path, tmp, meta=record_meta)
+        with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
+            shutil.copyfileobj(src, dst)
+        os.remove(tmp)
+    size = os.path.getsize(jsonl)
+    rows = count_lines(jsonl)
+    logger.info(f"  {os.path.basename(jsonl)}: {rows:,} rows, {size/ONE_MB:.1f} MB "
+                f"({len(paths)} files)")
+    log.record(**meta, orig_mb=round(orig_total / ONE_MB, 1),
+               jsonl_mb=round(size / ONE_MB, 1), rows=rows,
+               sha256=sha256_file(jsonl), status="ok")
+
+
 # ------------------------------------------------------------ handlers -------
 def fetch_hf(ref, domain, desc, lic, folder, log):
     from huggingface_hub import HfApi
@@ -211,13 +247,16 @@ def fetch_url(url, domain, desc, lic, folder, log, kind="url"):
             data = [f for f in data if f.lower().endswith(ext)] or data
             if any(f.lower().endswith(ext) for f in data):
                 break
-        for path in sorted(data):
-            inner = os.path.splitext(os.path.basename(path))[0]
-            tgt = os.path.join(folder, os.path.basename(path))
-            shutil.move(path, tgt)
-            _convert_and_log(tgt, os.path.join(folder, inner + ".jsonl"), log,
-                             kind=kind, name=f"{stem}/{inner}", domain=domain,
-                             desc=desc, url=url, lic=lic)
+        # Concatenate every matching file into ONE jsonl per source. A repo that
+        # stores its data across thousands of small files otherwise explodes into
+        # thousands of outputs; collapse it to a single <source>.jsonl.
+        if data:
+            origin_fmt = os.path.splitext(data[0])[1].lstrip(".")
+            _combine_to_jsonl(sorted(data), os.path.join(folder, stem + ".jsonl"), log,
+                              kind=kind, name=stem, domain=domain, desc=desc, url=url,
+                              lic=lic, origin_fmt=origin_fmt)
+        else:
+            logger.warning(f"  no data files inside {stem}.zip")
         shutil.rmtree(zdir, ignore_errors=True)
         return
     _convert_and_log(orig, os.path.join(folder, stem + ".jsonl"), log,
