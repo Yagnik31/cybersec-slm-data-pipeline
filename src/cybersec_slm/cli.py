@@ -11,6 +11,7 @@ Individual stages:
     cybersec-slm chunk    [--chunk-size N] [--overlap N]
     cybersec-slm split    [--ratio 0.8 0.1 0.1] [--seed 42]
     cybersec-slm validate
+    cybersec-slm discover [--domains ...] [--dry-run]        # search engines -> tracking sheet
 """
 
 from __future__ import annotations
@@ -78,6 +79,26 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-final-dedup", action="store_true",
                    help="skip the final cross-source dedup pass")
 
+    # ── discover (search-engine source discovery) ────────────────────────────
+    d = sub.add_parser("discover",
+                       help="search engines by keyword -> append new rows to the sheet")
+    d.add_argument("--sheet-url", default=None,
+                   help="tracking sheet URL/id (default: the finalized sheet)")
+    d.add_argument("--domains", nargs="*", default=None,
+                   help="limit to these Sub-Domains (default: all)")
+    d.add_argument("--per-keyword", type=int, default=5,
+                   help="results to request per keyword (<=10, default 5)")
+    d.add_argument("--max-per-domain", type=int, default=None,
+                   help="cap new rows kept per Sub-Domain")
+    d.add_argument("--dry-run", action="store_true",
+                   help="discover + write CSV but do not append to the sheet")
+    d.add_argument("--out", default=None,
+                   help="path for the candidate CSV (default: logs/discovered/)")
+    d.add_argument("--api-key", default=None, help="Google API key (env: GOOGLE_API_KEY)")
+    d.add_argument("--cse-id", default=None, help="Programmable Search id (env: GOOGLE_CSE_ID)")
+    d.add_argument("--creds", default=None,
+                   help="service-account JSON for append (env: GOOGLE_SHEETS_CREDENTIALS)")
+
     # ── all ───────────────────────────────────────────────────────────────────
     sub.add_parser("all", help="extract -> clean -> chunk -> split (full pipeline)")
     return p
@@ -119,6 +140,18 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "validate":
         from .cleaning.schema import validate_corpus
         validate_corpus()
+
+    elif args.stage == "discover":
+        from .discovery import run as discovery
+        summary = discovery.discover(
+            args.sheet_url, domains=args.domains,
+            per_keyword=args.per_keyword, max_per_domain=args.max_per_domain,
+            dry_run=args.dry_run, out_csv=args.out,
+            api_key=args.api_key or os.environ.get("GOOGLE_API_KEY"),
+            cse_id=args.cse_id or os.environ.get("GOOGLE_CSE_ID"),
+            creds_path=args.creds or os.environ.get("GOOGLE_SHEETS_CREDENTIALS"))
+        print(f"discover: {summary['found']} hits, {summary['new']} new, "
+              f"{summary['appended']} appended -> {summary['csv']}")
 
     elif args.stage == "all":
         from .extraction import run as extraction

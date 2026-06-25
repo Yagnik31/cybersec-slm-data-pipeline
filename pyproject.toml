@@ -43,6 +43,13 @@ cleaning = [
     "fasttext-wheel>=0.9.2",     # language id (langfilter)
     "langdetect>=1.0.9",         # language id fallback (langfilter)
 ]
+# Search-engine source discovery (cybersec-slm discover). The search call and
+# dedup read use httpx (already a core dep); only the live append to the Google
+# Sheet needs these Google client libraries.
+discovery = [
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.30.0",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",
