@@ -42,6 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--cap", type=int, default=None,
                    help="max records per domain (balance action)")
 
+    # ── normalize ─────────────────────────────────────────────────────────────
+    n = sub.add_parser("normalize",
+                       help="schema-normalize clean_data/ -> normalized/dataset.jsonl")
+    n.add_argument("--input", default=None,
+                   help="cleaned-records root (default: clean_data/)")
+    n.add_argument("--fresh", action="store_true",
+                   help="ignore any existing dataset.jsonl (do not resume/append)")
+    n.add_argument("--limit", type=int, default=None,
+                   help="cap records per file (smoke test)")
+
     # ── validate ──────────────────────────────────────────────────────────────
     sub.add_parser("validate",
                    help="validate cleaned/ records against Pydantic schema")
@@ -115,6 +125,12 @@ def main(argv: list[str] | None = None) -> None:
                                workers=args.workers, limit=args.limit,
                                keep_raw=args.keep_raw,
                                final_dedup=not args.no_final_dedup)
+
+    elif args.stage == "normalize":
+        from .core import CLEAN_DATA
+        from .normalize import run_normalization
+        run_normalization(args.input or CLEAN_DATA, resume=not args.fresh,
+                          limit=args.limit)
 
     elif args.stage == "validate":
         from .cleaning.schema import validate_corpus

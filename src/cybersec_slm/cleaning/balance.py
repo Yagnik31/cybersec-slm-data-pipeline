@@ -127,20 +127,24 @@ def apply_cap(max_per_domain: int, input_dir: str = CLEANED,
         rng.shuffle(all_recs)
         kept = all_recs[:max_per_domain]
 
-        # Re-distribute back into same file structure proportionally.
+        # Measure original sizes BEFORE truncating (truncating first would zero
+        # every size and collapse the whole domain into the first file).
+        sizes = {src: (os.path.getsize(src) or 1) for src in src_files}
+        total_size = max(sum(sizes.values()), 1)
         for src in src_files:
             open(src, "w").close()
         idx = 0
-        for src in src_files:
-            share = round(max_per_domain * (os.path.getsize(src) or 1) /
-                          max(sum(os.path.getsize(s) for s in src_files), 1))
+        for i, src in enumerate(src_files):
+            if idx >= len(kept):
+                break
+            # last file takes the remainder so rounding never drops records
+            share = (len(kept) - idx if i == len(src_files) - 1
+                     else round(len(kept) * sizes[src] / total_size))
             w = JsonlWriter(src)
             for rec in kept[idx: idx + share]:
                 w.write(rec)
             w.close()
             idx += share
-            if idx >= len(kept):
-                break
         new_counts[domain] = min(total, max_per_domain)
 
     logger.info(f"apply_cap done: max_per_domain={max_per_domain:,}")

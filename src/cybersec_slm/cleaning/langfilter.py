@@ -23,6 +23,12 @@ import re
 
 from .common import LANGS, PKG_DIR, logger, try_import
 
+# fastText returns a label for *any* input, however garbled. Below this
+# probability we treat the guess as "unknown" (kept) rather than a confident
+# non-English detection — otherwise obfuscated text (e.g. phishing emails) is
+# mislabelled non-English and needlessly sent to the translator.
+LID_MIN_CONF = 0.50
+
 _STOPWORDS = {"the", "and", "of", "to", "in", "is", "for", "that", "with",
               "as", "are", "on", "be", "this", "by", "an", "or", "it", "from"}
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -87,8 +93,11 @@ class LangFilter:
             return "unknown"
         if self.backend == "fasttext":
             try:
-                label = self._model.predict(sample)[0][0]   # '__label__en'
-                return label.replace("__label__", "")
+                labels, probs = self._model.predict(sample)   # (('__label__en',), [p])
+                conf = float(probs[0]) if len(probs) else 0.0
+                if conf < LID_MIN_CONF:        # not confident -> keep as unknown
+                    return "unknown"
+                return labels[0].replace("__label__", "")
             except Exception:
                 return "unknown"
         if self.backend == "langdetect":

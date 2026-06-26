@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Source mappers + registry dispatch (flowchart: Source Mapper, Registry Dispatch).
+
+A *mapper* turns one cleaned record (whatever its original schema) into the
+canonical field dict that :class:`~cybersec_slm.normalize.schema.CanonicalRecord`
+expects. ``BaseMapper`` (an ``abc.ABC``) enforces ``.map()`` on every subclass;
+two concrete strategies cover the two record shapes the corpus actually contains:
+
+  * ``ProseMapper``     — records whose payload is natural-language ``text``.
+  * ``StructuredMapper``— feature/table rows: serialize the salient columns into
+                          a readable "key: value" sentence so they still carry text.
+
+Mappers register themselves in ``MAPPER_REGISTRY`` via ``@register_mapper(name)``.
+``get_mapper`` dispatches per source; the first time an unknown source appears it
+is counted (``collections.Counter``) and a loguru first-sight alert fires, then it
+falls back to a sensible default rather than dropping the record.
+"""
+
+from __future__ import annotations
+
+import abc
+import re
+from collections import Counter
+from typing import Any
+
+from ..core import logger
+
+# ------------------------------------------------------------------ re cleaning
+_WS = re.compile(r"[ \t ]+")
+_NL = re.compile(r"\n{3,}")
+# Common scraped/boilerplate lines to strip before a record becomes corpus text.
+_BOILERPLATE = re.compile(
+    r"(?im)^\s*(cookie policy|all rights reserved|terms of service|"
+    r"privacy policy|subscribe to our newsletter|share this article|"
+    r"click here to|read more\b.*|copyright\s*©?.*)\s*$")
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def clean_text(text: str) -> str:
+    """Normalize whitespace and strip boilerplate lines (the ``re`` node)."""
+    if not text:
+        return ""
+    text = _CTRL.sub("", text)
+    text = _BOILERPLATE.sub("", text)
+    text = _WS.sub(" ", text)
+    text = _NL.sub("\n\n", text)
+    return text.strip()
+
+
+# Fields that are pipeline bookkeeping, never corpus content.
+_RESERVED = {"source", "url", "license", "text", "_text_field"}
+# Annotation/provenance keys added by the cleaning stage (leading underscore).
+_INTERNAL_PREFIX = "_"
+
+
+# --------------------------------------------------------------- mapper registry
+MAPPER_REGISTRY: dict[str, "BaseMapper"] = {}
+_UNMAPPED: Counter[str] = Counter()        # sources with no dedicated mapper
+
+
+def register_mapper(name: str):
+    """Class decorator: instantiate and register a mapper under ``name``."""
+    def _wrap(cls):
+        MAPPER_REGISTRY[name] = cls()
+        return cls
+    return _wrap
+
+
+class BaseMapper(abc.ABC):
+    """Abstract base — every subclass must implement :meth:`map`."""
+
+    #: keys this mapper preserves verbatim into ``meta`` (None = all non-reserved)
+    keep_meta: tuple[str, ...] | None = None
+
+    @abc.abstractmethod
+    def map(self, rec: dict, *, domain: str, source: str) -> dict | None:
+        """Return canonical field dict, or ``None`` to drop the record."""
+        raise NotImplementedError
+
+    # -- shared helpers ------------------------------------------------------
+    def _meta(self, rec: dict) -> dict[str, Any]:
+        if self.keep_meta is not None:
+            return {k: rec[k] for k in self.keep_meta if k in rec}
+        return {k: v for k, v in rec.items()
+                if k not in _RESERVED and not k.startswith(_INTERNAL_PREFIX)}
+
+    @staticmethod
+    def _str_or(value, fallback=None):
+        """Non-empty string, else the fallback (record fields are often NaN/None)."""
+        return value.strip() if isinstance(value, str) and value.strip() else fallback
+
+    def _base(self, rec: dict, text: str, domain: str, source: str) -> dict:
+        return {
+            "domain": domain,
+            "source": self._str_or(rec.get("source"), source),
+            "text": text,
+            "url": self._str_or(rec.get("url")),
+            "license": self._str_or(rec.get("license")),
+            "text_field": rec.get("_text_field"),
+            "meta": self._meta(rec),
+        }
+
+
+@register_mapper("prose")
+class ProseMapper(BaseMapper):
+    """Default mapper: the cleaned ``text`` field is already prose."""
+
+    def map(self, rec: dict, *, domain: str, source: str) -> dict | None:
+        text = clean_text(rec.get("text") or "")
+        if not text:
+            return None
+        return self._base(rec, text, domain, source)
+
+
+@register_mapper("structured")
+class StructuredMapper(BaseMapper):
+    """Feature/table rows: render salient columns into a readable sentence so the
+    row still contributes text instead of being dropped as no-prose."""
+
+    _SKIP = _RESERVED | {"id", "index", "unnamed: 0"}
+    _MAX_FIELDS = 40
+
+    def map(self, rec: dict, *, domain: str, source: str) -> dict | None:
+        # If the cleaning stage already produced prose text, prefer it.
+        existing = clean_text(rec.get("text") or "")
+        if existing:
+            return self._base(rec, existing, domain, source)
+        parts: list[str] = []
+        for k, v in rec.items():
+            if k.lower() in self._SKIP or k.startswith(_INTERNAL_PREFIX):
+                continue
+            if v is None or v == "":
+                continue
+            parts.append(f"{k}: {v}")
+            if len(parts) >= self._MAX_FIELDS:
+                break
+        if not parts:
+            return None
+        text = clean_text("; ".join(parts))
+        return self._base(rec, text, domain, source)
+
+
+# ----------------------------------------------------------------- dispatch ----
+def get_mapper(source: str, rec: dict) -> BaseMapper:
+    """Pick a mapper for ``source``.
+
+    Explicitly-registered source names win. Otherwise choose by record shape:
+    a usable ``text`` field -> prose, else structured. First sighting of an
+    unregistered source raises a loguru alert and is counted as unmapped.
+    """
+    if source in MAPPER_REGISTRY:
+        return MAPPER_REGISTRY[source]
+
+    if _UNMAPPED[source] == 0:
+        logger.warning(f"normalize: no dedicated mapper for source '{source}' "
+                       f"— dispatching by record shape")
+    _UNMAPPED[source] += 1
+
+    text = rec.get("text")
+    if isinstance(text, str) and text.strip():
+        return MAPPER_REGISTRY["prose"]
+    return MAPPER_REGISTRY["structured"]
+
+
+def unmapped_sources() -> dict[str, int]:
+    """Sources that fell back to shape dispatch, with hit counts (for the report)."""
+    return dict(_UNMAPPED)

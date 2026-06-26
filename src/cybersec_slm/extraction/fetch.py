@@ -102,12 +102,21 @@ def _combine_to_jsonl(paths, jsonl, log, *, kind, name, domain, desc, url, lic, 
             log.record(**meta, orig_mb=round(orig_total / ONE_MB, 1) or None,
                        status="skipped (>5GB)")
             return
-        orig_total += os.path.getsize(path)
         tmp = jsonl + ".part"
-        to_jsonl(path, tmp, meta=record_meta)
-        with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
-            shutil.copyfileobj(src, dst)
-        os.remove(tmp)
+        try:
+            to_jsonl(path, tmp, meta=record_meta)
+            if not os.path.exists(tmp):       # reader skipped it (e.g. oversize)
+                continue
+            with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
+                shutil.copyfileobj(src, dst)
+            orig_total += os.path.getsize(path)
+        except Exception as ex:               # one bad member must not fail the source
+            logger.warning(f"  skip unreadable member {os.path.basename(path)}: "
+                           f"{type(ex).__name__}: {ex}")
+            continue
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     size = os.path.getsize(jsonl)
     rows = count_lines(jsonl)
     logger.info(f"  {os.path.basename(jsonl)}: {rows:,} rows, {size/ONE_MB:.1f} MB "
@@ -154,12 +163,21 @@ def fetch_hf(ref, domain, desc, lic, folder, log):
             orig = os.path.join(folder, (key if len(members) == 1 else f"{key}.part{i}")
                                 + (".original.jsonl" if fext == ".jsonl" else fext))
             download(url, orig)
-            orig_total += os.path.getsize(orig)
             tmp = jsonl + ".part"
-            to_jsonl(orig, tmp, meta=shard_meta)
-            with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
-                shutil.copyfileobj(src, dst)
-            os.remove(tmp)
+            try:
+                to_jsonl(orig, tmp, meta=shard_meta)
+                if not os.path.exists(tmp):    # reader skipped it (e.g. oversize)
+                    continue
+                with open(tmp, "rb") as src, open(jsonl, "ab") as dst:
+                    shutil.copyfileobj(src, dst)
+                orig_total += os.path.getsize(orig)
+            except Exception as ex:            # one bad shard must not fail the source
+                logger.warning(f"  skip unreadable shard {os.path.basename(orig)}: "
+                               f"{type(ex).__name__}: {ex}")
+                continue
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
             total = os.path.getsize(jsonl)
             if total > CAP_BYTES:
                 skipped = True

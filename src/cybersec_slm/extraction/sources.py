@@ -131,6 +131,14 @@ def _bool(v, default=False) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "js", "on")
 
 
+def _int(v, default: int) -> int:
+    """Parse an int from a spreadsheet cell, tolerating floats ('70.0') / junk."""
+    try:
+        return int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 def _domain_for(row: dict) -> str:
     explicit = _val(row, "domain", "sub_domain", "subdomain")
     if explicit:
@@ -205,7 +213,7 @@ def _row_to_descriptor(row: dict) -> dict | None:
             prefix = f"{p.scheme}://{p.netloc}{p.path.rsplit('/', 1)[0]}/"
         return dict(kind="website", domain=domain, slug=slug, start_url=url,
                     license=lic, use_js=_bool(_val(row, "use_js")),
-                    max_pages=int(_val(row, "max_pages", default="70")),
+                    max_pages=_int(_val(row, "max_pages", default="70"), 70),
                     allow_prefix=prefix, description=desc)
     logger.warning(f"unknown kind {kind!r} for source {name!r}; skipping")
     return None

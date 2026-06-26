@@ -21,6 +21,7 @@ Public API:
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import re
 
 from .common import logger, try_import
@@ -28,6 +29,13 @@ from .common import logger, try_import
 # Google's free endpoint rejects requests over ~5000 chars; stay well under.
 _MAX_CHUNK = 4500
 _PARA_RE = re.compile(r"\n{2,}")
+
+# Resilience guards for the online backend. The free Google endpoint rate-limits
+# aggressively; without these a blocked endpoint hangs the whole run (each record
+# fans out into chunked HTTP calls that each stall near the TCP timeout).
+_CALL_TIMEOUT = 20          # max seconds for one record's translation
+_MAX_CONSEC_FAILS = 6       # consecutive failures -> disable the online backend
+_MAX_CHUNKS = 8             # cap chunks/record so one huge text can't fan out forever
 
 
 def _normalize_code(code: str | None) -> str | None:
@@ -71,6 +79,8 @@ class Translator:
         self.backend = "none"
         self._google = None
         self._argos = None
+        self._consec_fail = 0       # consecutive online-backend failures
+        self._pool = None           # lazy single-thread pool for per-call timeouts
 
         if backend in ("auto", "google", "deep-translator"):
             dt = try_import("deep_translator")
@@ -102,18 +112,43 @@ class Translator:
             return text, False
         try:
             if self.backend == "google":
-                return self._translate_google(text), True
-            if self.backend == "argos":
-                return self._translate_argos(text, src), True
+                result = self._run_with_timeout(self._translate_google, text)
+            elif self.backend == "argos":
+                result = self._translate_argos(text, src)
+            else:
+                return text, False
+            self._consec_fail = 0           # success resets the breaker
+            return result, True
         except Exception as ex:
+            self._consec_fail += 1
             logger.warning(f"translate: {self.backend} failed ({type(ex).__name__})")
-        return text, False
+            # Circuit breaker: a sustained outage (rate-limit/block) means every
+            # further call will also stall, so stop trying and let callers apply
+            # their drop policy — otherwise one source hangs the entire run.
+            if self.backend == "google" and self._consec_fail >= _MAX_CONSEC_FAILS:
+                logger.error(f"translate: disabling google backend after "
+                             f"{self._consec_fail} consecutive failures "
+                             f"(rate-limited/blocked); non-English now dropped")
+                self.backend = "none"
+            return text, False
+
+    def _run_with_timeout(self, fn, *args):
+        """Run a backend call with a hard wall-clock cap (a hung HTTP request
+        cannot otherwise be interrupted). The orphaned worker is left to finish
+        on its own; the breaker stops us from queuing many more behind it."""
+        if self._pool is None:
+            self._pool = _cf.ThreadPoolExecutor(max_workers=1,
+                                                thread_name_prefix="translate")
+        return self._pool.submit(fn, *args).result(timeout=_CALL_TIMEOUT)
 
     # ----------------------------------------------------------- backends ----
     def _translate_google(self, text: str) -> str:
         tr = self._google(source="auto", target=self.target)
+        chunks = _chunk(text)
+        if len(chunks) > _MAX_CHUNKS:           # cap fan-out for very long texts
+            chunks = chunks[:_MAX_CHUNKS]
         out = []
-        for chunk in _chunk(text):
+        for chunk in chunks:
             if not chunk.strip():
                 out.append(chunk)
                 continue

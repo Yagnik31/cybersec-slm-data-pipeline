@@ -120,7 +120,39 @@ def _read_json_repair(path: str) -> pd.DataFrame:
         data = json.loads(repair_json(text))
     if isinstance(data, dict):
         data = data.get("data", data) if "data" in data else data
-    return pd.DataFrame(data if isinstance(data, list) else [data])
+    if isinstance(data, list):
+        # Coerce non-dict elements (scalars / nested lists) into records so
+        # pandas never chokes on a mixed list — DataFrame(list) requires every
+        # element to be a dict, else it raises "dictionary update sequence...".
+        rows = [d if isinstance(d, dict)
+                else {"text": d if isinstance(d, str)
+                      else json.dumps(d, ensure_ascii=False)}
+                for d in data]
+        return pd.DataFrame(rows)
+    return pd.DataFrame([data])
+
+
+def _read_unknown(path: str) -> pd.DataFrame:
+    """Last-resort reader for files with no / unrecognized extension.
+
+    Archive and repo dumps (e.g. UCI exports) are often real CSV or JSON saved
+    without an extension; sniff those before giving up so one extensionless file
+    doesn't fail the whole source.
+    """
+    attempts = (
+        lambda p: pd.read_json(p, lines=True),
+        lambda p: pd.read_json(p),
+        lambda p: pd.read_csv(p, low_memory=False),
+        lambda p: pd.read_csv(p, sep="\t", low_memory=False),
+    )
+    for reader in attempts:
+        try:
+            df = reader(path)
+            if df.shape[1] > 0 and df.shape[0] > 0:
+                return df
+        except Exception:
+            continue
+    raise ValueError(f"Unsupported file type: {path}")
 
 
 def read_any(path: str) -> pd.DataFrame:
@@ -144,7 +176,10 @@ def read_any(path: str) -> pd.DataFrame:
         try:
             return pd.read_json(path)
         except ValueError:
-            return _read_json_repair(path)
+            try:                                    # .json that is really JSONL
+                return pd.read_json(path, lines=True)
+            except ValueError:
+                return _read_json_repair(path)
     if low.endswith(".xlsx"):
         return pd.read_excel(path, engine="openpyxl")
     if low.endswith(".xls"):
@@ -154,7 +189,7 @@ def read_any(path: str) -> pd.DataFrame:
         if df.shape[1] == len(NSLKDD_COLS):
             df.columns = NSLKDD_COLS
         return df
-    raise ValueError(f"Unsupported file type: {path}")
+    return _read_unknown(path)
 
 
 def group_key(rel_path: str) -> str:
