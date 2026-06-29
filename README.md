@@ -13,7 +13,7 @@ stages that you can run on their own or back to back:
 It's packaged as a proper installable package (`cybersec_slm`) with a single
 CLI, so you don't have to remember which script lives where.
 
-EDA, schema normalization, and CI are deliberately left for later — the goal
+EDA, schema normalization, and CI are deliberately left for later - the goal
 here was to get extraction and cleaning solid first.
 
 ## How it's laid out
@@ -28,7 +28,7 @@ tests/           a test suite for both stages (pytest)
 sources/ docs/   the research notes behind which sources made the cut
 ```
 
-The pipeline writes its data into folders at the project root — `raw_data/`
+The pipeline writes its data into folders at the project root - `raw_data/`
 (extraction output), `cleaned/` (the handoff for EDA), `flagged/` (records a
 human should look at), `dropped/` (what got removed, with reasons), and `logs/`.
 These are all generated and git-ignored, so the repo stays code-only.
@@ -39,13 +39,13 @@ These are all generated and git-ignored, so the repo stays code-only.
 cp .env.example .env
 uv venv && source .venv/bin/activate
 uv sync                       # everything extraction needs
-uv sync --extra cleaning      # optional — see the note below
-uv sync --extra dev           # optional — pytest + ruff
+uv sync --extra cleaning      # optional - see the note below
+uv sync --extra dev           # optional - pytest + ruff
 ```
 
 A nice property of the cleaning stage: it runs on the standard library alone.
 The heavy tools (Presidio for PII, fastText for language ID, datasketch for
-near-duplicates) are optional — if they're not installed, each step quietly
+near-duplicates) are optional - if they're not installed, each step quietly
 falls back to a built-in (regex, a stopword/script heuristic, a pure-Python
 MinHash). Installing the `cleaning` extra just upgrades the quality. Each run
 logs which backend it actually used.
