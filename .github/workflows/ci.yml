@@ -43,7 +43,9 @@ jobs:
         run: uv sync
 
       - name: pip-audit (supply-chain)
-        run: uv run pip-audit --strict --desc
+        # --skip-editable: the local project (cybersec-slm-data-pipeline) is
+        # installed editable and isn't on PyPI, which would fail --strict.
+        run: uv run pip-audit --strict --desc --skip-editable
 
       - name: gitleaks (secret scan)
         uses: gitleaks/gitleaks-action@v2
