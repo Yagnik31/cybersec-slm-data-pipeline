@@ -4,9 +4,9 @@ This project gathers cybersecurity text from across the web and turns it into a
 clean, training-ready corpus for a small language model. It's split into two
 stages that you can run on their own or back to back:
 
-- **Extraction** — pull data from each source (datasets, PDFs, feeds, a few
+- **Extraction** - pull data from each source (datasets, PDFs, feeds, a few
   crawlable sites) and normalize everything to JSONL.
-- **Cleaning** — take that raw JSONL and sanitize it, check it for anomalies,
+- **Cleaning** - take that raw JSONL and sanitize it, check it for anomalies,
   drop duplicates, strip out PII, and normalize the language to English
   (translating non-English text rather than dropping it).
 
